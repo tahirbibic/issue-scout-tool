@@ -2,6 +2,11 @@ import os
 import requests
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel
+
+load_dotenv()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
 
 class GitHubError(Exception):
     def __init__(self, status_code, message):
@@ -9,36 +14,31 @@ class GitHubError(Exception):
         self.message = message
         super().__init__(message)
 
-load_dotenv()
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+class RepoRequest(BaseModel):       # definisan JEDNOM, ovde
+    owner: str
+    repo: str
 
 
 def get_repo_stars(owner: str, repo: str):
     url = f"https://api.github.com/repos/{owner}/{repo}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
-
     response = requests.get(url, headers=headers)
-
     if response.status_code != 200:
         raise GitHubError(response.status_code, response.json().get("message", ""))
+    return response.json()["stargazers_count"]
 
-    data = response.json()
-    return data["stargazers_count"]
 
 def count_recent_external_merges(owner: str, repo: str):
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
-
     response = requests.get(url, headers=headers, params={"state": "closed"})
-
     if response.status_code != 200:
         raise GitHubError(response.status_code, response.json().get("message", ""))
 
     pulls = response.json()
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-    
+
     count = 0
     for pr in pulls:
         if pr["merged_at"] is None:
@@ -51,25 +51,23 @@ def count_recent_external_merges(owner: str, repo: str):
         count += 1
     return count
 
+
 def fetch_open_issues(owner: str, repo: str, min_stars: int):
     stars = get_repo_stars(owner, repo)
     if stars < min_stars:
         return []
-    
+
     merges = count_recent_external_merges(owner, repo)
     if merges < 3:
         return []
-    
+
     url = f"https://api.github.com/repos/{owner}/{repo}/issues"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
-
     response = requests.get(url, headers=headers, params={"state": "open"})
-
     if response.status_code != 200:
         raise GitHubError(response.status_code, response.json().get("message", ""))
 
     issues = response.json()
-
     results = []
     for issue in issues:
         if "pull_request" in issue:
@@ -81,3 +79,31 @@ def fetch_open_issues(owner: str, repo: str, min_stars: int):
                 "url": issue["html_url"],
             })
     return results
+
+
+def search_repos(language: str, min_stars: int):
+    url = "https://api.github.com/search/repositories"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
+    params = {"q": f"language:{language} stars:>{min_stars} good-first-issues:>0"}
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code != 200:
+        raise GitHubError(response.status_code, response.json().get("message", ""))
+
+    data = response.json()
+    result = []
+    for repo in data["items"]:
+        result.append(RepoRequest(owner=repo["owner"]["login"], repo=repo["name"]))
+    return result
+
+
+def get_issues_batch(repos: list[RepoRequest], min_stars: int = 0):
+    results = []
+    failed = []
+    for repo in repos:
+        try:
+            data = fetch_open_issues(repo.owner, repo.repo, min_stars)
+            results.append({"repo": f"{repo.owner}/{repo.repo}", "issues": data})
+        except GitHubError as e:
+            failed.append({"repo": f"{repo.owner}/{repo.repo}", "error": e.message})
+            continue
+    return {"results": results, "failed": failed}
