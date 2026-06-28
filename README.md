@@ -1,72 +1,98 @@
 # Issue Scout
 
-Finds **real, contributable** GitHub issues by filtering out the noise.
+A backend service that finds **real and contributable** GitHub issues and notifies you when new ones appear — filtering out the noise that other "good first issue" lists leave in.
 
-## The Problem
+## Problem
 
-Finding a good open-source issue to contribute to is painful. Existing tools list
-repos by language and "good first issue" labels — but they don't tell you which
-repos are actually *alive*. You end up drowning in:
+Finding a good open-source issue to contribute to is painful and hard. Existing tools list repos by language and `good first issue` labels, but they don't tell you which repos are actually *alive*. You end up drowning in:
 
-- **farms** — repos stuffed with `good first issue` labels but no real activity
+- **farms** — repos stuffed with labels but no real activity
 - **dead maintainers** — repos where PRs pile up and nobody merges them
-- **taken work** — issues already assigned to someone, or already covered by an open PR
+- **taken work** — issues already assigned, or already covered by an open PR
 
-You waste hours opening repos one by one to check all this manually.
+Issue Scout scores repository quality instead of just filtering by language, and can run on a schedule to email you only the *new* issues that match your saved preferences.
 
 ## How It Works
 
-Issue Scout applies quality filters at **two levels**:
+### Quality engine (four filters)
 
-**Repo-level** (rejects the whole repo if it fails):
-- **Star floor** — skips repos below a minimum star count
-- **Ghost-maintainer check** — counts recent (last 90 days) merged PRs from
-  *external* contributors; rejects repos where the maintainer isn't actively
-  accepting outside work
+Applied at two levels:
+
+**Repo-level** (rejects the whole repo):
+- **Star floor** — skips repos below a minimum star count.
+- **Ghost-maintainer check** — counts merged PRs from *external* contributors in the last 90 days; rejects repos where the maintainer isn't actively accepting outside work.
 
 **Issue-level** (filters individual issues):
-- **No pull requests** — GitHub's API mixes PRs into the issues list; these are removed
-- **No assignees** — only returns issues nobody is already working on
+- **No pull requests** — GitHub's issues endpoint mixes PRs into the list; these are removed.
+- **No assignees** — only issues nobody is already working on.
 
-It returns only the issues that survive all four checks.
+A repo must pass both repo-level checks before its issues are even fetched (fail-fast: cheap checks first, to conserve the GitHub API rate limit).
 
-## Why It's Different
+### Push flow
 
-Tools like goodfirstissue.dev and EddieHub **list** repos. Issue Scout **scores
-quality** — it checks whether a repo is alive and whether an issue is actually
-available, instead of just filtering by language.
+1. A user registers, logs in (JWT), and saves a preference (language + minimum stars).
+2. A background scheduler runs hourly, executes discovery for every saved preference, and emails the user any **new** matching issues.
+3. Sent issues are tracked per user, so the same issue is never emailed twice.
 
-## Setup
+## Features
+
+- JWT authentication (register / login) with bcrypt-hashed passwords
+- Saved per-user preferences with ownership checks (you can only run your own)
+- Repository search across GitHub by language + star threshold
+- Batch processing of multiple repos with graceful degradation (one failing repo doesn't break the request)
+- Redis caching (cache-aside with TTL) to reduce GitHub API calls and survive restarts
+- Hourly background scheduler (APScheduler) running discovery automatically
+- Email notifications (SMTP) with per-user deduplication
+- PostgreSQL with Alembic migrations
+- Custom exceptions that return honest HTTP status codes (404 / 403 instead of a generic 500)
+
+## Tech Stack
+
+FastAPI · PostgreSQL · SQLAlchemy · Alembic · Redis · Docker Compose · APScheduler · PyJWT · bcrypt · SMTP
+
+## API Overview
+
+  Method  Endpoint  Description
+ -----------------------------------
+  POST   `/register`   Create an account
+  POST   `/login`   Get a JWT access token
+  POST   `/preferences`   Save a search preference (auth)
+  POST   `/discover`   Search + filter repos by language/stars (auth)
+  POST   `/discover/from-preference/{id}`   Run discovery from a saved preference (auth)
+  POST   `/issues/batch`   Filter a provided list of repos
+  GET    `/issues/{owner}/{repo}`   Filter a single repo's issues
+
+## Setup (local)
 
 ```bash
 # 1. Clone
 git clone https://github.com/tahirbibic/issue-scout.git
 cd issue-scout
 
-# 2. Create a virtual environment
+# 2. Virtual environment
 python -m venv venv
+.\venv\Scripts\Activate.ps1        # Windows PowerShell
+# source venv/bin/activate         # macOS / Linux
 
-# 3. Activate it
-#    Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-#    Mac/Linux:
-source venv/bin/activate
-
-# 4. Install dependencies
+# 3. Dependencies
 pip install -r requirements.txt
 
-# 5. Add your GitHub token
-#    Create a .env file with:
-#    GITHUB_TOKEN=your_token_here
+# 4. Start Postgres + Redis
+docker compose up -d
 
-# 6. Run
+# 5. Environment variables — create a .env file:
+#    DATABASE_URL=postgresql://postgres:PASSWORD@localhost:5432/issue_scout
+#    JWT_SECRET=your_long_random_secret
+#    ALGORITHM=HS256
+#    GITHUB_TOKEN=your_github_token
+#    SMTP_EMAIL=you@gmail.com
+#    SMTP_PASSWORD=your_gmail_app_password
+
+# 6. Run database migrations
+alembic upgrade head
+
+# 7. Start the API
 uvicorn main:app --reload
 ```
 
-Then open `http://127.0.0.1:8000/docs` and try the `/issues/{owner}/{repo}` endpoint.
-
-## Example
-GET /issues/encode/httpx?min_stars=100
-
-Returns open, unassigned, non-PR issues — but only if `encode/httpx` passes the
-star floor and ghost-maintainer checks.
+Open `http://127.0.0.1:8000/docs` to explore the API.
