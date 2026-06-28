@@ -221,14 +221,6 @@ def create_preference(pref: PreferenceCreate, db: Session = Depends(get_db), cur
     
     return new_pref
 
-#test
 @app.get("/me")
 def me(user: User = Depends(get_current_user)):
     return {"username": user.username}
-
-@app.get("/test-email")
-def test_email(current_user: User = Depends(get_current_user)):
-    if current_user.email is None:
-        raise HTTPException(status_code=400, detail="No email on file for this user")
-    send_email(current_user.email, "Test", "Radi li ovo?")
-    return {"sent": True}
